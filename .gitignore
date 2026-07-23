@@ -1,0 +1,10 @@
+# Artefactos de geração em massa
+/generated/
+
+# Ambientes locais
+.venv/
+venv/
+
+# Caches Python
+__pycache__/
+*.py[cod]
