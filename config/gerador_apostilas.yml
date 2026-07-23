@@ -1,0 +1,42 @@
+identidade:
+  instituicao: "Escola Bíblica Epignósis"
+  lema: "Conhecer a Deus. Viver a Palavra. Manifestar o Reino."
+  idioma: "Português europeu/Angola (pt-PT)"
+  versao_biblica: "Almeida Revista e Corrigida (ARC)"
+  estilo: "Académico formal, bíblico, pastoral, didáctico e institucional"
+  ano: 2026
+  codigo_prefixo: "EBE-APO"
+
+aparencia:
+  fonte_titulo: "Garamond"
+  fonte_corpo: "Garamond"
+  cor_primaria: "#1B3A5C"
+  cor_secundaria: "#2E7D4F"
+  cor_terciaria: "#C9A14B"
+  logo_principal: "logo_ebe.png"
+  logo_pequeno: "logo_pequeno.png"
+
+ia:
+  # As chaves devem ser configuradas em Settings → Secrets and variables → Actions.
+  gemini_api_key_env: "GEMINI_API_KEY"
+  groq_api_key_env: "GROQ_API_KEY"
+  gemini_model: "gemini-1.5-flash"
+  groq_model: "llama-3.1-8b-instant"
+  temperatura_planeamento: 0.45
+  temperatura_redaccao: 0.72
+  temperatura_revisao: 0.2
+
+qualidade:
+  minimo_caracteres: 6500
+  similaridade_maxima_jaccard: 0.32
+  max_paragrafos_repetidos: 1
+  exigir_eixos_epignosis:
+    - "Conhecer"
+    - "Crer"
+    - "Viver"
+    - "Servir"
+
+saida:
+  pasta_base: "generated/apostilas"
+  manifesto: "generated/manifests/mapa_apostilas.jsonl"
+  indice_qualidade: "generated/indices/qualidade.jsonl"
