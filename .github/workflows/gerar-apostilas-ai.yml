@@ -1,259 +1,109 @@
-name: Gerar apostilas EBE com IA
+name: Gerar Apostilas EBE com IA
 
 on:
   workflow_dispatch:
     inputs:
       modo:
-        description: "Motor de geração"
-        required: true
-        default: "gemini_groq"
+        description: "Motor de geração (gemini_groq/gemini/groq/offline)"
         type: choice
+        default: "offline"
         options:
-          - gemini_groq
-          - gemini
-          - groq
           - offline
+          - groq
+          - gemini
+          - gemini_groq
       inicio:
-        description: "Número inicial da apostila no mapa (1-1029)"
-        required: true
+        description: "Número inicial da apostila (1-1029)"
+        type: string
         default: "1"
       limite:
-        description: "Quantidade máxima no lote (recomendado: 1-10 em APIs grátis)"
-        required: true
-        default: "3"
-      nivel:
-        description: "Filtro opcional por nível"
-        required: false
-        default: ""
-      instituto:
-        description: "Filtro opcional por instituto"
-        required: false
-        default: ""
-      escola:
-        description: "Filtro opcional por escola"
-        required: false
-        default: ""
-      curso:
-        description: "Filtro opcional por curso"
-        required: false
-        default: ""
-      modulo:
-        description: "Filtro opcional por módulo"
-        required: false
-        default: ""
+        description: "Quantidade de apostilas no lote"
+        type: string
+        default: "1"
       dry_run:
-        description: "Só listar o lote; não gerar DOCX nem chamar APIs"
-        required: true
+        description: "Apenas listar, não gerar"
+        type: boolean
         default: false
-        type: boolean
-      offline_if_missing:
-        description: "Se secrets de API estiverem ausentes, gerar em modo offline de teste"
-        required: true
-        default: false
-        type: boolean
-      comitar_apostilas:
-        description: "Comitar apostilas organizadas no repositório"
-        required: true
-        default: true
-        type: boolean
 
 permissions:
   contents: write
-  actions: read
-
-defaults:
-  run:
-    shell: bash
 
 jobs:
-  validar-inputs:
-    name: Validar parâmetros de entrada
-    runs-on: ubuntu-latest
-    steps:
-      - name: Validar intervalo de apostilas
-        run: |
-          INICIO="${{ inputs.inicio }}"
-          LIMITE="${{ inputs.limite }}"
-          
-          if ! [[ "$INICIO" =~ ^[0-9]+$ ]] || [ "$INICIO" -lt 1 ] || [ "$INICIO" -gt 1029 ]; then
-            echo "❌ ERRO: início deve estar entre 1 e 1029"
-            exit 1
-          fi
-          
-          if ! [[ "$LIMITE" =~ ^[0-9]+$ ]] || [ "$LIMITE" -lt 1 ]; then
-            echo "❌ ERRO: limite deve ser um número positivo"
-            exit 1
-          fi
-          
-          echo "✅ Parâmetros validados: início=$INICIO, limite=$LIMITE"
-
-  gerar:
-    name: Gerar lote de apostilas
-    needs: validar-inputs
+  gerar-apostilas:
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
-      GROQ_MODEL: ${{ vars.GROQ_MODEL }}
 
     steps:
-      - name: Baixar repositório
+      - name: Clonar repositório
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Criar diretórios necessários
-        run: |
-          mkdir -p generated/manifests
-          mkdir -p generated/indices
-          mkdir -p apostilas
-          echo "✅ Diretórios criados com sucesso"
-
-      - name: Configurar Python
+      - name: Configurar Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
 
       - name: Instalar dependências
         run: |
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          echo "✅ Dependências instaladas"
 
-      - name: Importar mapa oficial de 1.029 apostilas
-        id: import_map
+      - name: Criar diretórios de saída
+        run: |
+          mkdir -p generated/manifests
+          mkdir -p generated/apostilas
+          mkdir -p apostilas
+
+      - name: Importar mapa de apostilas
         run: |
           python scripts/importar_mapa_apostilas.py \
             --pdf EBE_Mapa_Completo_Apostilas-2.pdf \
             --saida generated/manifests/mapa_apostilas.jsonl
-          
-          echo "import_status=success" >> "$GITHUB_OUTPUT"
-          echo "✅ Mapa de apostilas importado com sucesso"
 
-      - name: Gerar apostilas do lote
-        id: generate
+      - name: Gerar apostilas
         run: |
-          ARGS=(
-            --manifest "generated/manifests/mapa_apostilas.jsonl"
-            --provider-mode "${{ inputs.modo }}"
-            --inicio "${{ inputs.inicio }}"
-            --limite "${{ inputs.limite }}"
-          )
+          python scripts/gerar_apostilas_ai.py \
+            --manifest generated/manifests/mapa_apostilas.jsonl \
+            --provider-mode ${{ inputs.modo }} \
+            --inicio ${{ inputs.inicio }} \
+            --limite ${{ inputs.limite }} \
+            ${{ inputs.dry_run && '--dry-run' || '' }} \
+            --saida generated/apostilas
 
-          # Adicionar filtros opcionais
-          if [[ -n "${{ inputs.nivel }}" ]]; then 
-            ARGS+=(--nivel "${{ inputs.nivel }}")
-          fi
-          if [[ -n "${{ inputs.instituto }}" ]]; then 
-            ARGS+=(--instituto "${{ inputs.instituto }}")
-          fi
-          if [[ -n "${{ inputs.escola }}" ]]; then 
-            ARGS+=(--escola "${{ inputs.escola }}")
-          fi
-          if [[ -n "${{ inputs.curso }}" ]]; then 
-            ARGS+=(--curso "${{ inputs.curso }}")
-          fi
-          if [[ -n "${{ inputs.modulo }}" ]]; then 
-            ARGS+=(--modulo "${{ inputs.modulo }}")
-          fi
-          if [[ "${{ inputs.dry_run }}" == "true" ]]; then 
-            ARGS+=(--dry-run)
-          fi
-          if [[ "${{ inputs.offline_if_missing }}" == "true" ]]; then 
-            ARGS+=(--offline-if-missing)
-          fi
-
-          echo "📝 Executando: python scripts/gerar_apostilas_ai.py ${ARGS[@]}"
-          python scripts/gerar_apostilas_ai.py "${ARGS[@]}"
-          
-          echo "generate_status=success" >> "$GITHUB_OUTPUT"
-          echo "✅ Geração concluída com sucesso"
-
-      - name: Organizar apostilas em estrutura hierárquica
-        if: ${{ success() && !inputs.dry_run }}
+      - name: Organizar apostilas em hierarquia
+        if: success() && !inputs.dry_run
         run: |
           python scripts/organizar_apostilas.py \
             --manifesto generated/manifests/mapa_apostilas.jsonl \
-            --gerados generated \
+            --gerados generated/apostilas \
             --saida apostilas
-          
-          echo "✅ Apostilas organizadas com sucesso"
 
-      - name: Validar artefatos gerados
-        if: ${{ success() }}
-        run: |
-          echo "📋 Estrutura gerada:"
-          if [ -d "generated/manifests" ]; then
-            echo "  Manifesto:"
-            find generated/manifests -type f | head -5
-          fi
-          
-          if [ -d "apostilas" ]; then
-            echo "  Apostilas organizadas:"
-            find apostilas -type f -name "*.docx" | wc -l
-          fi
-
-      - name: Publicar artefactos gerados (download)
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: apostilas-ebe-${{ github.run_number }}
-          path: |
-            apostilas/
-            generated/manifests/
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Comitar apostilas no repositório
-        if: ${{ success() && inputs.comitar_apostilas && !inputs.dry_run }}
+      - name: Fazer commit das apostilas
+        if: success() && !inputs.dry_run
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # Adicionar apostilas organizadas
           git add apostilas/ || true
-          git add generated/manifests/mapa_apostilas.jsonl || true
-          
-          # Verificar se há mudanças
-          if git diff --cached --quiet; then
-            echo "ℹ️  Sem alterações para comitar."
-          else
-            git commit -m "feat: gerar apostilas EBE lote ${{ inputs.inicio }}-${{ inputs.limite }}
+          git diff --cached --quiet || git commit -m "feat: gerar apostilas lote ${{ inputs.inicio }}-${{ inputs.limite }} (modo: ${{ inputs.modo }})"
+          git push || git pull --rebase && git push
 
-Modo: ${{ inputs.modo }}
-Início: ${{ inputs.inicio }}
-Limite: ${{ inputs.limite }}
-Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            
-            git push origin HEAD:${{ github.ref_name }} || {
-              echo "⚠️  Falha no push, tentando novamente..."
-              git pull --rebase
-              git push origin HEAD:${{ github.ref_name }}
-            }
-            
-            echo "✅ Apostilas comitadas com sucesso"
-          fi
+      - name: Publicar artefatos para download
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apostilas-${{ github.run_number }}
+          path: apostilas/
+          retention-days: 30
 
-      - name: Resumo da execução
-        if: ${{ always() }}
+      - name: Resumo
+        if: always()
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📊 RESUMO DA GERAÇÃO DE APOSTILAS"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🎯 Parâmetros:"
-          echo "  Modo: ${{ inputs.modo }}"
-          echo "  Intervalo: ${{ inputs.inicio }} - $((inputs.inicio + inputs.limite - 1))"
-          echo "  Limite: ${{ inputs.limite }}"
-          echo ""
-          echo "📁 Saídas:"
-          echo "  ✓ Artefatos (14 dias): apostilas-ebe-${{ github.run_number }}"
-          echo "  ✓ Repositório: apostilas/"
-          echo "  ✓ Manifesto: generated/manifests/"
-          echo ""
-          echo "🔗 Links:"
-          echo "  Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ Workflow concluído!"
+          echo "📊 Modo: ${{ inputs.modo }}"
+          echo "📋 Intervalo: ${{ inputs.inicio }} até $((inputs.inicio + inputs.limite - 1))"
+          echo "📁 Saída: apostilas/"
+          echo "🔗 Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
