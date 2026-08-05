@@ -59,14 +59,37 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 defaults:
   run:
     shell: bash
 
 jobs:
+  validar-inputs:
+    name: Validar parâmetros de entrada
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validar intervalo de apostilas
+        run: |
+          INICIO=${{ inputs.inicio }}
+          LIMITE=${{ inputs.limite }}
+          
+          if ! [[ "$INICIO" =~ ^[0-9]+$ ]] || [ "$INICIO" -lt 1 ] || [ "$INICIO" -gt 1029 ]; then
+            echo "❌ ERRO: início deve estar entre 1 e 1029"
+            exit 1
+          fi
+          
+          if ! [[ "$LIMITE" =~ ^[0-9]+$ ]] || [ "$LIMITE" -lt 1 ]; then
+            echo "❌ ERRO: limite deve ser um número positivo"
+            exit 1
+          fi
+          
+          echo "✅ Parâmetros validados: início=$INICIO, limite=$LIMITE"
+
   gerar:
     name: Gerar lote de apostilas
+    needs: validar-inputs
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -82,6 +105,12 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Criar diretórios necessários
+        run: |
+          mkdir -p generated/manifests
+          mkdir -p generated/indices
+          echo "✅ Diretórios criados com sucesso"
+
       - name: Configurar Python
         uses: actions/setup-python@v5
         with:
@@ -90,54 +119,149 @@ jobs:
 
       - name: Instalar dependências
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
+          echo "✅ Dependências instaladas"
 
       - name: Importar mapa oficial de 1.029 apostilas
+        id: import_map
         run: |
+          if [ ! -f "EBE_Mapa_Completo_Apostilas-2.pdf" ]; then
+            echo "⚠️  AVISO: PDF do mapa não encontrado, tentando importar de fonte alternativa"
+            # Adicione lógica aqui se houver um fallback
+          fi
+          
           python scripts/importar_mapa_apostilas.py \
             --pdf EBE_Mapa_Completo_Apostilas-2.pdf \
             --saida generated/manifests/mapa_apostilas.jsonl
+          
+          if [ $? -eq 0 ]; then
+            echo "import_status=success" >> $GITHUB_OUTPUT
+            echo "✅ Mapa de apostilas importado com sucesso"
+          else
+            echo "import_status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Falha na importação do mapa"
+          fi
 
       - name: Gerar apostilas do lote
+        id: generate
         run: |
           ARGS=(
-            --manifest generated/manifests/mapa_apostilas.jsonl
+            --manifest "generated/manifests/mapa_apostilas.jsonl"
             --provider-mode "${{ inputs.modo }}"
             --inicio "${{ inputs.inicio }}"
             --limite "${{ inputs.limite }}"
           )
 
-          if [[ -n "${{ inputs.nivel }}" ]]; then ARGS+=(--nivel "${{ inputs.nivel }}"); fi
-          if [[ -n "${{ inputs.instituto }}" ]]; then ARGS+=(--instituto "${{ inputs.instituto }}"); fi
-          if [[ -n "${{ inputs.escola }}" ]]; then ARGS+=(--escola "${{ inputs.escola }}"); fi
-          if [[ -n "${{ inputs.curso }}" ]]; then ARGS+=(--curso "${{ inputs.curso }}"); fi
-          if [[ -n "${{ inputs.modulo }}" ]]; then ARGS+=(--modulo "${{ inputs.modulo }}"); fi
-          if [[ "${{ inputs.dry_run }}" == "true" ]]; then ARGS+=(--dry-run); fi
-          if [[ "${{ inputs.offline_if_missing }}" == "true" ]]; then ARGS+=(--offline-if-missing); fi
+          # Adicionar filtros opcionais
+          if [[ -n "${{ inputs.nivel }}" ]]; then 
+            ARGS+=(--nivel "${{ inputs.nivel }}")
+          fi
+          if [[ -n "${{ inputs.instituto }}" ]]; then 
+            ARGS+=(--instituto "${{ inputs.instituto }}")
+          fi
+          if [[ -n "${{ inputs.escola }}" ]]; then 
+            ARGS+=(--escola "${{ inputs.escola }}")
+          fi
+          if [[ -n "${{ inputs.curso }}" ]]; then 
+            ARGS+=(--curso "${{ inputs.curso }}")
+          fi
+          if [[ -n "${{ inputs.modulo }}" ]]; then 
+            ARGS+=(--modulo "${{ inputs.modulo }}")
+          fi
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then 
+            ARGS+=(--dry-run)
+          fi
+          if [[ "${{ inputs.offline_if_missing }}" == "true" ]]; then 
+            ARGS+=(--offline-if-missing)
+          fi
 
+          echo "📝 Executando: python scripts/gerar_apostilas_ai.py ${ARGS[@]}"
           python scripts/gerar_apostilas_ai.py "${ARGS[@]}"
+          
+          if [ $? -eq 0 ]; then
+            echo "generate_status=success" >> $GITHUB_OUTPUT
+            echo "✅ Geração concluída com sucesso"
+          else
+            echo "generate_status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Falha na geração de apostilas"
+            exit 1
+          fi
+
+      - name: Validar artefatos gerados
+        if: ${{ success() }}
+        run: |
+          if [ -d "generated/manifests" ]; then
+            echo "📋 Manifesto:"
+            ls -lh generated/manifests/ || echo "  (vazio)"
+          fi
+          
+          if [ -d "generated/indices" ]; then
+            echo "📊 Índices:"
+            ls -lh generated/indices/ || echo "  (vazio)"
+          fi
+          
+          if [ -f "generated/ultima_execucao.json" ]; then
+            echo "📅 Última execução:"
+            cat generated/ultima_execucao.json
+          fi
 
       - name: Publicar artefactos gerados
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: apostilas-ebe-${{ github.run_number }}
-          path: |
-            generated/
+          path: generated/
           if-no-files-found: warn
           retention-days: 14
+          compression-level: 6
 
       - name: Comitar manifesto e índice com GITHUB_TOKEN
-        if: ${{ inputs.publicar_manifesto == true }}
+        if: ${{ inputs.publicar_manifesto == true && success() }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f generated/manifests/mapa_apostilas.jsonl || true
-          git add -f generated/indices/qualidade.jsonl generated/ultima_execucao.json || true
+          
+          # Adicionar apenas arquivos de manifesto e índice
+          git add -f generated/manifests/mapa_apostilas.jsonl 2>/dev/null || true
+          git add -f generated/indices/qualidade.jsonl 2>/dev/null || true
+          git add -f generated/ultima_execucao.json 2>/dev/null || true
+          
+          # Verificar se há mudanças
           if git diff --cached --quiet; then
-            echo "Sem alterações de manifesto/índice para comitar."
+            echo "ℹ️  Sem alterações de manifesto/índice para comitar."
           else
-            git commit -m "chore: atualizar manifesto/índice de apostilas geradas"
+            git commit -m "chore: atualizar manifesto/índice de apostilas geradas
+
+- Início: ${{ inputs.inicio }}
+- Limite: ${{ inputs.limite }}
+- Modo: ${{ inputs.modo }}
+- Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             git push origin HEAD:${{ github.ref_name }}
+            echo "✅ Manifesto/índice comitado com sucesso"
+          fi
+
+      - name: Registrar falha
+        if: ${{ failure() }}
+        run: |
+          echo "❌ Workflow falhou"
+          echo "Detalhes:"
+          echo "  - Modo: ${{ inputs.modo }}"
+          echo "  - Início: ${{ inputs.inicio }}"
+          echo "  - Limite: ${{ inputs.limite }}"
+          echo "  - Dry run: ${{ inputs.dry_run }}"
+          exit 1
+
+  notificar-resultado:
+    name: Notificar resultado
+    runs-on: ubuntu-latest
+    needs: [gerar]
+    if: ${{ always() }}
+    steps:
+      - name: Resultado final
+        run: |
+          if [ "${{ needs.gerar.result }}" == "success" ]; then
+            echo "🎉 Geração de apostilas concluída com SUCESSO"
+          else
+            echo "⚠️  Geração de apostilas com FALHA"
           fi
