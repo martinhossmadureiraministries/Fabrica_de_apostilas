@@ -51,10 +51,10 @@ on:
         required: true
         default: false
         type: boolean
-      publicar_manifesto:
-        description: "Comitar o manifesto/índice gerado usando GITHUB_TOKEN (não comita DOCX)"
+      comitar_apostilas:
+        description: "Comitar apostilas organizadas no repositório"
         required: true
-        default: false
+        default: true
         type: boolean
 
 permissions:
@@ -72,8 +72,8 @@ jobs:
     steps:
       - name: Validar intervalo de apostilas
         run: |
-          INICIO=${{ inputs.inicio }}
-          LIMITE=${{ inputs.limite }}
+          INICIO="${{ inputs.inicio }}"
+          LIMITE="${{ inputs.limite }}"
           
           if ! [[ "$INICIO" =~ ^[0-9]+$ ]] || [ "$INICIO" -lt 1 ] || [ "$INICIO" -gt 1029 ]; then
             echo "❌ ERRO: início deve estar entre 1 e 1029"
@@ -103,12 +103,13 @@ jobs:
       - name: Baixar repositório
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Criar diretórios necessários
         run: |
           mkdir -p generated/manifests
           mkdir -p generated/indices
+          mkdir -p apostilas
           echo "✅ Diretórios criados com sucesso"
 
       - name: Configurar Python
@@ -126,22 +127,12 @@ jobs:
       - name: Importar mapa oficial de 1.029 apostilas
         id: import_map
         run: |
-          if [ ! -f "EBE_Mapa_Completo_Apostilas-2.pdf" ]; then
-            echo "⚠️  AVISO: PDF do mapa não encontrado, tentando importar de fonte alternativa"
-            # Adicione lógica aqui se houver um fallback
-          fi
-          
           python scripts/importar_mapa_apostilas.py \
             --pdf EBE_Mapa_Completo_Apostilas-2.pdf \
             --saida generated/manifests/mapa_apostilas.jsonl
           
-          if [ $? -eq 0 ]; then
-            echo "import_status=success" >> $GITHUB_OUTPUT
-            echo "✅ Mapa de apostilas importado com sucesso"
-          else
-            echo "import_status=failed" >> $GITHUB_OUTPUT
-            echo "❌ Falha na importação do mapa"
-          fi
+          echo "import_status=success" >> "$GITHUB_OUTPUT"
+          echo "✅ Mapa de apostilas importado com sucesso"
 
       - name: Gerar apostilas do lote
         id: generate
@@ -179,89 +170,90 @@ jobs:
           echo "📝 Executando: python scripts/gerar_apostilas_ai.py ${ARGS[@]}"
           python scripts/gerar_apostilas_ai.py "${ARGS[@]}"
           
-          if [ $? -eq 0 ]; then
-            echo "generate_status=success" >> $GITHUB_OUTPUT
-            echo "✅ Geração concluída com sucesso"
-          else
-            echo "generate_status=failed" >> $GITHUB_OUTPUT
-            echo "❌ Falha na geração de apostilas"
-            exit 1
-          fi
+          echo "generate_status=success" >> "$GITHUB_OUTPUT"
+          echo "✅ Geração concluída com sucesso"
+
+      - name: Organizar apostilas em estrutura hierárquica
+        if: ${{ success() && !inputs.dry_run }}
+        run: |
+          python scripts/organizar_apostilas.py \
+            --manifesto generated/manifests/mapa_apostilas.jsonl \
+            --gerados generated \
+            --saida apostilas
+          
+          echo "✅ Apostilas organizadas com sucesso"
 
       - name: Validar artefatos gerados
         if: ${{ success() }}
         run: |
+          echo "📋 Estrutura gerada:"
           if [ -d "generated/manifests" ]; then
-            echo "📋 Manifesto:"
-            ls -lh generated/manifests/ || echo "  (vazio)"
+            echo "  Manifesto:"
+            find generated/manifests -type f | head -5
           fi
           
-          if [ -d "generated/indices" ]; then
-            echo "📊 Índices:"
-            ls -lh generated/indices/ || echo "  (vazio)"
-          fi
-          
-          if [ -f "generated/ultima_execucao.json" ]; then
-            echo "📅 Última execução:"
-            cat generated/ultima_execucao.json
+          if [ -d "apostilas" ]; then
+            echo "  Apostilas organizadas:"
+            find apostilas -type f -name "*.docx" | wc -l
           fi
 
-      - name: Publicar artefactos gerados
+      - name: Publicar artefactos gerados (download)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: apostilas-ebe-${{ github.run_number }}
-          path: generated/
+          path: |
+            apostilas/
+            generated/manifests/
           if-no-files-found: warn
-          retention-days: 14
-          compression-level: 6
+          retention-days: 30
 
-      - name: Comitar manifesto e índice com GITHUB_TOKEN
-        if: ${{ inputs.publicar_manifesto == true && success() }}
+      - name: Comitar apostilas no repositório
+        if: ${{ success() && inputs.comitar_apostilas && !inputs.dry_run }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          # Adicionar apenas arquivos de manifesto e índice
-          git add -f generated/manifests/mapa_apostilas.jsonl 2>/dev/null || true
-          git add -f generated/indices/qualidade.jsonl 2>/dev/null || true
-          git add -f generated/ultima_execucao.json 2>/dev/null || true
+          # Adicionar apostilas organizadas
+          git add apostilas/ || true
+          git add generated/manifests/mapa_apostilas.jsonl || true
           
           # Verificar se há mudanças
           if git diff --cached --quiet; then
-            echo "ℹ️  Sem alterações de manifesto/índice para comitar."
+            echo "ℹ️  Sem alterações para comitar."
           else
-            git commit -m "chore: atualizar manifesto/índice de apostilas geradas
+            git commit -m "feat: gerar apostilas EBE lote ${{ inputs.inicio }}-${{ inputs.limite }}
 
-- Início: ${{ inputs.inicio }}
-- Limite: ${{ inputs.limite }}
-- Modo: ${{ inputs.modo }}
-- Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            git push origin HEAD:${{ github.ref_name }}
-            echo "✅ Manifesto/índice comitado com sucesso"
+Modo: ${{ inputs.modo }}
+Início: ${{ inputs.inicio }}
+Limite: ${{ inputs.limite }}
+Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            
+            git push origin HEAD:${{ github.ref_name }} || {
+              echo "⚠️  Falha no push, tentando novamente..."
+              git pull --rebase
+              git push origin HEAD:${{ github.ref_name }}
+            }
+            
+            echo "✅ Apostilas comitadas com sucesso"
           fi
 
-      - name: Registrar falha
-        if: ${{ failure() }}
+      - name: Resumo da execução
+        if: ${{ always() }}
         run: |
-          echo "❌ Workflow falhou"
-          echo "Detalhes:"
-          echo "  - Modo: ${{ inputs.modo }}"
-          echo "  - Início: ${{ inputs.inicio }}"
-          echo "  - Limite: ${{ inputs.limite }}"
-          echo "  - Dry run: ${{ inputs.dry_run }}"
-          exit 1
-
-  notificar-resultado:
-    name: Notificar resultado
-    runs-on: ubuntu-latest
-    needs: [gerar]
-    if: ${{ always() }}
-    steps:
-      - name: Resultado final
-        run: |
-          if [ "${{ needs.gerar.result }}" == "success" ]; then
-            echo "🎉 Geração de apostilas concluída com SUCESSO"
-          else
-            echo "⚠️  Geração de apostilas com FALHA"
-          fi
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📊 RESUMO DA GERAÇÃO DE APOSTILAS"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🎯 Parâmetros:"
+          echo "  Modo: ${{ inputs.modo }}"
+          echo "  Intervalo: ${{ inputs.inicio }} - $((inputs.inicio + inputs.limite - 1))"
+          echo "  Limite: ${{ inputs.limite }}"
+          echo ""
+          echo "📁 Saídas:"
+          echo "  ✓ Artefatos (14 dias): apostilas-ebe-${{ github.run_number }}"
+          echo "  ✓ Repositório: apostilas/"
+          echo "  ✓ Manifesto: generated/manifests/"
+          echo ""
+          echo "🔗 Links:"
+          echo "  Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
